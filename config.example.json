@@ -1,0 +1,41 @@
+{
+  "owner": "mwekundujohn-ship-it",
+  "repo": "ts-rdp",
+  "workflow": "rdp.yml",
+  "ref": "main",
+  "token": "YOUR_GITHUB_CLASSIC_PAT_ALPHA",
+  "betaToken": "YOUR_GITHUB_CLASSIC_PAT_BETA",
+  "authkey": "YOUR_TAILSCALE_AUTHKEY",
+  "password": "YOUR_RDP_PASSWORD",
+  "durationMinutes": 350,
+  "tailscaleExe": "C:\\Program Files\\Tailscale\\tailscale.exe",
+  "tailnet": "YOUR_TAILNET",
+  "nvidiaKey": "YOUR_NVIDIA_API_KEY",
+  "fleet": "alpha",
+  "nodeRole": "master",
+  "fleets": {
+    "alpha": {
+      "owner": "mwekundujohn-ship-it",
+      "repo": "ts-rdp",
+      "workflow": "rdp.yml",
+      "ref": "main",
+      "token": "YOUR_GITHUB_CLASSIC_PAT_ALPHA",
+      "registry": "registry/fleet-alpha.json",
+      "megaEmail": "YOUR_MEGA_EMAIL_1",
+      "megaPassword": "YOUR_MEGA_PASSWORD_1"
+    },
+    "beta": {
+      "owner": "joy-yves",
+      "repo": "ts-rdp",
+      "workflow": "rdp.yml",
+      "ref": "main",
+      "token": "YOUR_GITHUB_CLASSIC_PAT_BETA",
+      "registry": "registry/fleet-beta.json",
+      "megaEmail": "YOUR_MEGA_EMAIL_2",
+      "megaPassword": "YOUR_MEGA_PASSWORD_2"
+    }
+  },
+  "mt5Login": "YOUR_DERIV_MT5_LOGIN_ID",
+  "mt5Password": "YOUR_DERIV_MT5_PASSWORD",
+  "mt5Server": "Deriv-Demo"
+}

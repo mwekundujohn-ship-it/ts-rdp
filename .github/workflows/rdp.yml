@@ -1,0 +1,298 @@
+name: ts-rdp
+
+on:
+  workflow_dispatch:
+    inputs:
+      fleet:
+        description: "Fleet name: alpha or beta"
+        required: true
+        default: "alpha"
+      node_role:
+        description: "Cluster role: master, worker1, or worker2"
+        required: true
+        default: "master"
+      duration_minutes:
+        description: "minutes alive (max 350)"
+        required: true
+        default: "350"
+      rdp_password:
+        description: "windows rdp password"
+        required: true
+      ts_authkey:
+        description: "tailscale auth key"
+        required: true
+      nvidia_api_key:
+        description: "nvidia nim api key for opencode"
+        required: true
+      mt5_login:
+        description: "Deriv MT5 Account Login ID"
+        required: false
+      mt5_password:
+        description: "Deriv MT5 Account Password"
+        required: false
+      mt5_server:
+        description: "Deriv Server (e.g. Deriv-Demo or Deriv-Server)"
+        required: false
+        default: "Deriv-Demo"
+      mega_email:
+        description: "MEGA Email (optional for auto-mount)"
+        required: false
+      mega_password:
+        description: "MEGA Password (optional for auto-mount)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  rdp:
+    runs-on: windows-2022
+    timeout-minutes: 360
+    steps:
+      - name: Checkout Repo Bundle
+        uses: actions/checkout@v4
+        with:
+          path: C:\repo
+
+      - name: Enable RDP and create user
+        shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ github.event.inputs.rdp_password }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $u = "rdp"; $p = $env:RDP_PASSWORD
+          if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) {
+            New-LocalUser -Name $u -Password (ConvertTo-SecureString $p -AsPlainText -Force) -PasswordNeverExpires -AccountNeverExpires | Out-Null
+          } else {
+            Set-LocalUser -Name $u -Password (ConvertTo-SecureString $p -AsPlainText -Force)
+          }
+          Add-LocalGroupMember -Group "Administrators" -Member $u -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $u -ErrorAction SilentlyContinue
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          New-NetFirewallRule -DisplayName "RDP 3389" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
+          New-NetFirewallRule -DisplayName "Cluster 5555" -Direction Inbound -Protocol TCP -LocalPort 5555 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
+          Set-Service TermService -StartupType Automatic
+          Start-Service TermService
+
+      - name: Install Deriv MT5, Python MetaTrader5 & MEGAcmd
+        shell: pwsh
+        env:
+          MT5_LOGIN: ${{ github.event.inputs.mt5_login }}
+          MT5_PASSWORD: ${{ github.event.inputs.mt5_password }}
+          MT5_SERVER: ${{ github.event.inputs.mt5_server }}
+          MEGA_EMAIL: ${{ github.event.inputs.mega_email }}
+          MEGA_PASSWORD: ${{ github.event.inputs.mega_password }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          # 1. Install Python MetaTrader5 package
+          pip install MetaTrader5 pyyaml
+
+          # 2. Download and silently install MT5 in C:\MT5 (Portable mode for clean deterministic paths)
+          New-Item -ItemType Directory -Force -Path "C:\MT5" | Out-Null
+          $mt5Setup = "$env:RUNNER_TEMP\mt5setup.exe"
+          Invoke-WebRequest "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" -OutFile $mt5Setup
+          Start-Process -FilePath $mt5Setup -ArgumentList "/auto /path:`"C:\MT5`"" -Wait
+
+          # 3. Scaffold C:\mt5-opencode and portable backtest clone C:\mt5-opencode\mt5bt
+          $proj = "C:\mt5-opencode"
+          New-Item -ItemType Directory -Force -Path "$proj\scripts", "$proj\config", "$proj\mt5bt", "C:\MT5\MQL5\Files\opencode\reports", "C:\MT5\MQL5\Experts\OpenCode" | Out-Null
+          robocopy "C:\MT5" "$proj\mt5bt" /E /NFL /NDL /NJH /NJS | Out-Null
+
+          # 4. Write config\mt5.json pointing to C:\MT5 and C:\mt5-opencode\mt5bt
+          $mt5Cfg = [ordered]@{
+            terminal_exe     = "C:\MT5\terminal64.exe"
+            metaeditor_exe   = "C:\MT5\metaeditor64.exe"
+            data_dir         = "C:\MT5"
+            mql5_dir         = "C:\MT5\MQL5"
+            bridge_dir       = "C:\MT5\MQL5\Files\opencode"
+            chart_state_file = "C:\MT5\MQL5\Files\opencode\chart_state.json"
+            clone_dir        = "C:\mt5-opencode\mt5bt"
+          }
+          $mt5Cfg | ConvertTo-Json | Set-Content -LiteralPath "$proj\config\mt5.json" -Encoding UTF8
+
+          # 5. Copy your mt5-bundle scripts and EAs if present in repo
+          if (Test-Path "C:\repo\mt5-bundle") {
+            Copy-Item "C:\repo\mt5-bundle\scripts\*" "$proj\scripts\" -Recurse -Force -ErrorAction SilentlyContinue
+            Copy-Item "C:\repo\mt5-bundle\MQL5\*" "C:\MT5\MQL5\" -Recurse -Force -ErrorAction SilentlyContinue
+            Copy-Item "C:\repo\mt5-bundle\MQL5\*" "$proj\mt5bt\MQL5\" -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          # 6. Write Deriv Auto-Login config and launch MT5 in portable mode under user session
+          $loginIni = @(
+            "[Common]"
+            "Login=$env:MT5_LOGIN"
+            "Password=$env:MT5_PASSWORD"
+            "Server=$env:MT5_SERVER"
+            "KeepPrivate=1"
+            "NewsEnable=0"
+            "[Experts]"
+            "AllowLiveTrading=1"
+            "AllowDllImport=1"
+            "Enabled=1"
+          ) -join "`r`n"
+          Set-Content -LiteralPath "C:\MT5\config\startup.ini" -Value $loginIni -Encoding ASCII
+          Set-Content -LiteralPath "$proj\mt5bt\config\startup.ini" -Value $loginIni -Encoding ASCII
+
+          # 7. Install MEGAcmd for 20GB Cloud Storage Sync
+          $megaInstaller = "$env:RUNNER_TEMP\MEGAcmdSetup64.exe"
+          Invoke-WebRequest "https://mega.nz/MEGAcmdSetup64.exe" -OutFile $megaInstaller
+          Start-Process -FilePath $megaInstaller -ArgumentList "/S" -Wait
+          $env:Path += ";$env:LOCALAPPDATA\MEGAcmd"
+          if ($env:MEGA_EMAIL -and $env:MEGA_PASSWORD) {
+            & "$env:LOCALAPPDATA\MEGAcmd\mega-login.bat" $env:MEGA_EMAIL $env:MEGA_PASSWORD
+            & "$env:LOCALAPPDATA\MEGAcmd\mega-mkdir.bat" -p /QuantCluster/models /QuantCluster/reports /QuantCluster/history
+          }
+
+      - name: Install OpenCode (Nemotron 3 Ultra 550B) + MT5 Tools + Cluster Worker
+        shell: pwsh
+        env:
+          NVIDIA_API_KEY: ${{ github.event.inputs.nvidia_api_key }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $prefix = "C:\ProgramData\opencode"
+          New-Item -ItemType Directory -Force -Path $prefix | Out-Null
+          & npm install -g --prefix $prefix "@opencode/cli"
+          $exe = Join-Path $prefix "opencode.cmd"
+
+          foreach ($cfgDir in @("C:\Users\rdp\.config\opencode", "C:\ProgramData\opencode")) {
+            New-Item -ItemType Directory -Force -Path "$cfgDir\tools" | Out-Null
+            if (Test-Path "C:\repo\mt5-bundle\tools\mt5.ts") {
+              Copy-Item "C:\repo\mt5-bundle\tools\mt5.ts" "$cfgDir\tools\mt5.ts" -Force
+            }
+          }
+
+          $cfg = [ordered]@{
+            '$schema' = "https://opencode.ai/config.json"
+            model = [ordered]@{ providerID = "nvidia"; model = "nemotron-3-ultra-550b-a55b"; variant = "high" }
+            providers = [ordered]@{
+              nvidia = [ordered]@{
+                name = "NVIDIA NIM"
+                env = @("NVIDIA_API_KEY")
+                package = "@opencode/ai/providers/openai-compatible"
+                settings = [ordered]@{
+                  baseURL = "https://integrate.api.nvidia.com/v1"
+                  apiKey = $env:NVIDIA_API_KEY
+                }
+                models = [ordered]@{
+                  "nemotron-3-ultra-550b-a55b" = [ordered]@{
+                    name = "Nemotron 3 Ultra 550B A55B"
+                    modelID = "nvidia/nemotron-3-ultra-550b-a55b"
+                    settings = [ordered]@{ reasoningEffort = "high" }
+                    body = [ordered]@{ reasoning_effort = "high" }
+                    capabilities = [ordered]@{
+                      reasoning = [ordered]@{ supported = $true; effort = @("none", "medium", "high") }
+                    }
+                    variants = @(
+                      [ordered]@{ id = "high"; settings = [ordered]@{ reasoningEffort = "high" }; body = [ordered]@{ reasoning_effort = "high" } }
+                    )
+                  }
+                }
+              }
+            }
+          }
+          $json = $cfg | ConvertTo-Json -Depth 20
+          Set-Content -LiteralPath "C:\Users\rdp\.config\opencode\opencode.json" -Value $json -Encoding UTF8
+          Set-Content -LiteralPath "C:\ProgramData\opencode\opencode.json" -Value $json -Encoding UTF8
+
+          # Create C:\cluster\worker_node.py with --continue session persistence
+          New-Item -ItemType Directory -Force -Path "C:\cluster" | Out-Null
+          $workerPy = @'
+          import socket, subprocess, json, os
+          WORKDIR = r"C:\mt5-opencode"
+          OPENCODE_BIN = r"C:\ProgramData\opencode\opencode.cmd"
+          os.environ["OPENCODE_CONFIG"] = r"C:\ProgramData\opencode\opencode.json"
+          os.environ["MT5_OPENCODE_HOME"] = r"C:\mt5-opencode"
+
+          s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          s.bind(("0.0.0.0", 5555))
+          s.listen(5)
+          while True:
+              conn, addr = s.accept()
+              try:
+                  req = json.loads(conn.recv(65536).decode("utf-8", errors="replace"))
+                  action = req.get("action", "fast_cmd")
+                  prompt = req.get("cmd", "")
+                  if action == "opencode":
+                      p = subprocess.run(["cmd.exe", "/c", OPENCODE_BIN, "run", "--continue", "--auto", prompt], cwd=WORKDIR, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300)
+                  else:
+                      p = subprocess.run(["powershell.exe", "-NoProfile", "-Command", prompt], cwd=WORKDIR, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300)
+                  res = {"status": "completed", "stdout": p.stdout, "stderr": p.stderr, "code": p.returncode}
+              except Exception as e:
+                  res = {"status": "error", "stderr": str(e)}
+              conn.sendall(json.dumps(res).encode("utf-8"))
+              conn.close()
+          '@
+          Set-Content -LiteralPath "C:\cluster\worker_node.py" -Value $workerPy -Encoding UTF8
+          Start-Process python -ArgumentList "C:\cluster\worker_node.py" -WorkingDirectory "C:\mt5-opencode" -WindowStyle Hidden
+
+          # Auto-launch MT5 + OpenCode inside RDP desktop startup
+          $launcher = @(
+            "@echo off"
+            "set `"NVIDIA_API_KEY=$env:NVIDIA_API_KEY`""
+            "set `"OPENCODE_CONFIG=C:\ProgramData\opencode\opencode.json`""
+            "set `"MT5_OPENCODE_HOME=C:\mt5-opencode`""
+            "start `"MT5`" `"C:\MT5\terminal64.exe`" /portable /config:`"C:\MT5\config\startup.ini`""
+            "cd /d C:\mt5-opencode"
+            "`"$exe`""
+          ) -join "`r`n"
+          Set-Content -LiteralPath "C:\Users\Public\Desktop\OpenCode-MT5.cmd" -Value $launcher -Encoding ASCII
+          $startup = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\OpenCode-MT5.cmd"
+          Set-Content -LiteralPath $startup -Value $launcher -Encoding ASCII
+
+      - name: Install Tailscale & Join Tailnet
+        shell: pwsh
+        env:
+          TS_AUTHKEY: ${{ github.event.inputs.ts_authkey }}
+          GH_TOKEN: ${{ github.token }}
+          FLEET: ${{ github.event.inputs.fleet }}
+          NODE_ROLE: ${{ github.event.inputs.node_role }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $msi = Join-Path $env:RUNNER_TEMP "tailscale.msi"
+          Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile $msi
+          Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait
+          $ts = "C:\Program Files\Tailscale\tailscale.exe"
+          $hostname = "$($env:FLEET)-$($env:NODE_ROLE)-$env:GITHUB_RUN_ID"
+          Start-Process -FilePath $ts -ArgumentList @("up","--hostname",$hostname,"--auth-key",$env:TS_AUTHKEY) -NoNewWindow
+          $ip = ""
+          for ($i=0; $i -lt 40; $i++) {
+            Start-Sleep -Seconds 3
+            $ip = (& $ts ip -4 2>$null | Select-Object -First 1)
+            if ($ip) { break }
+          }
+          $ip = $ip.Trim()
+          $self = ((& $ts status --json 2>$null | Out-String | ConvertFrom-Json).Self.DNSName)
+          $obj = @{ status = "ready"; fleet = $env:FLEET; role = $env:NODE_ROLE; ip = $ip; host = $hostname; self = $self; user = "rdp"; port = 3389; run_id = $env:GITHUB_RUN_ID; opencode = "ready"; mt5 = "ready" }
+          $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($obj | ConvertTo-Json -Compress)))
+          $headers = @{ Authorization = "token $env:GH_TOKEN"; "User-Agent" = "ci"; Accept = "application/vnd.github+json" }
+
+          # Write both per-run status and fleet/role-based discovery file
+          foreach ($file in @("status-$($env:GITHUB_RUN_ID).json", "node-$($env:FLEET)-$($env:NODE_ROLE).json")) {
+            $api = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/contents/$file"
+            $sha = $null
+            try { $cur = Invoke-RestMethod -Uri $api -Headers $headers; $sha = $cur.sha } catch {}
+            $body = @{ message = "ready $env:NODE_ROLE $ip"; content = $b64; branch = "main" }
+            if ($sha) { $body.sha = $sha }
+            Invoke-RestMethod -Uri $api -Method Put -Headers $headers -Body ($body | ConvertTo-Json) -ContentType "application/json" | Out-Null
+          }
+
+      - name: Keep alive & Sync to MEGA Before Expiry
+        shell: pwsh
+        env:
+          DURATION: ${{ github.event.inputs.duration_minutes }}
+          NODE_ROLE: ${{ github.event.inputs.node_role }}
+        run: |
+          $deadline = (Get-Date).AddMinutes([int]$env:DURATION - 5)
+          $ts = "C:\Program Files\Tailscale\tailscale.exe"
+          while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 60
+            & $ts status | Out-Null
+          }
+          # Auto-upload backtest reports, equity curves, and compiled EAs to MEGA 5 mins before 6h kill
+          if (Test-Path "$env:LOCALAPPDATA\MEGAcmd\mega-put.bat") {
+            & "$env:LOCALAPPDATA\MEGAcmd\mega-put.bat" -c "C:\MT5\MQL5\Files\opencode\reports\*" "/QuantCluster/reports/$($env:NODE_ROLE)_$($env:GITHUB_RUN_ID)/" 2>$null
+            & "$env:LOCALAPPDATA\MEGAcmd\mega-put.bat" -c "C:\MT5\MQL5\Experts\OpenCode\*" "/QuantCluster/models/$($env:NODE_ROLE)_$($env:GITHUB_RUN_ID)/" 2>$null
+          }

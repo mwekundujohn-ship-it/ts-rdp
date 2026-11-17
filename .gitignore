@@ -1,0 +1,8 @@
+config.json
+current-rdp.txt
+last-rdp.txt
+rdp-*.txt
+rdp-*.rdp
+cloud_nodes-*.json
+__pycache__/
+*.pyc
