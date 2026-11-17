@@ -52,7 +52,7 @@ jobs:
       - name: Checkout Repo Bundle
         uses: actions/checkout@v4
         with:
-          path: C:\repo
+          path: repo
 
       - name: Enable RDP and create user
         shell: pwsh
@@ -112,10 +112,10 @@ jobs:
           $mt5Cfg | ConvertTo-Json | Set-Content -LiteralPath "$proj\config\mt5.json" -Encoding UTF8
 
           # 5. Copy your mt5-bundle scripts and EAs if present in repo
-          if (Test-Path "C:\repo\mt5-bundle") {
-            Copy-Item "C:\repo\mt5-bundle\scripts\*" "$proj\scripts\" -Recurse -Force -ErrorAction SilentlyContinue
-            Copy-Item "C:\repo\mt5-bundle\MQL5\*" "C:\MT5\MQL5\" -Recurse -Force -ErrorAction SilentlyContinue
-            Copy-Item "C:\repo\mt5-bundle\MQL5\*" "$proj\mt5bt\MQL5\" -Recurse -Force -ErrorAction SilentlyContinue
+          if (Test-Path ".\repo\mt5-bundle") {
+            Copy-Item ".\repo\mt5-bundle\scripts\*" "$proj\scripts\" -Recurse -Force -ErrorAction SilentlyContinue
+            Copy-Item ".\repo\mt5-bundle\MQL5\*" "C:\MT5\MQL5\" -Recurse -Force -ErrorAction SilentlyContinue
+            Copy-Item ".\repo\mt5-bundle\MQL5\*" "$proj\mt5bt\MQL5\" -Recurse -Force -ErrorAction SilentlyContinue
           }
 
           # 6. Write Deriv Auto-Login config and launch MT5 in portable mode under user session
@@ -157,8 +157,8 @@ jobs:
 
           foreach ($cfgDir in @("C:\Users\rdp\.config\opencode", "C:\ProgramData\opencode")) {
             New-Item -ItemType Directory -Force -Path "$cfgDir\tools" | Out-Null
-            if (Test-Path "C:\repo\mt5-bundle\tools\mt5.ts") {
-              Copy-Item "C:\repo\mt5-bundle\tools\mt5.ts" "$cfgDir\tools\mt5.ts" -Force
+            if (Test-Path ".\repo\mt5-bundle\tools\mt5.ts") {
+              Copy-Item ".\repo\mt5-bundle\tools\mt5.ts" "$cfgDir\tools\mt5.ts" -Force
             }
           }
 

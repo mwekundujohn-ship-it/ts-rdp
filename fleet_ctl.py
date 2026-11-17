@@ -123,18 +123,33 @@ def wait_ready(cfg, run_id, role, fleet, timeout=900):
     raise TimeoutError(f"timed out waiting for {role} run {run_id}")
 
 
+def send_worker(ip, action, prompt):
+    payload = json.dumps({"action": action, "cmd": prompt}).encode("utf-8")
+    with socket.create_connection((ip, 5555), timeout=15) as sock:
+        sock.settimeout(300)
+        sock.sendall(payload)
+        sock.shutdown(socket.SHUT_WR)
+        chunks = []
+        while True:
+            part = sock.recv(65536)
+            if not part:
+                break
+            chunks.append(part)
+    return json.loads(b"".join(chunks).decode("utf-8"))
+
+
 def spawn(name, replace):
     cfg = fleet_cfg(load_cfg(), name)
     old = [str(r["id"]) for r in run_list(cfg) if r.get("status") in ("queued", "in_progress")]
     nodes = []
+    expires = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=int(cfg["durationMinutes"]) + 2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     for role in ROLES:
         run_id = dispatch_role(cfg, role)
         print(f"{name}/{role}: run {run_id} queued", flush=True)
-        nodes.append({"role": role, "run_id": str(run_id)})
-    expires = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=int(cfg["durationMinutes"]) + 2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    for node in nodes:
-        st = wait_ready(cfg, node["run_id"], node["role"], name)
-        node.update({
+        st = wait_ready(cfg, run_id, role, name)
+        node = {
+            "role": role,
+            "run_id": str(run_id),
             "ip": st.get("ip"),
             "host": st.get("host") or st.get("self"),
             "self": st.get("self"),
@@ -143,16 +158,24 @@ def spawn(name, replace):
             "worker_port": 5555,
             "expires": expires,
             "ready": True,
-        })
-        wait_port(node["ip"], 5555, 90)
-        if node["role"] == "master":
-            wait_port(node["ip"], 3389, 90)
+        }
+        if not wait_port(node["ip"], 5555, 90):
+            raise TimeoutError(f"{name}/{role}: port 5555 never opened on {node['ip']}")
+        if role == "master" and not wait_port(node["ip"], 3389, 90):
+            raise TimeoutError(f"{name}/{role}: port 3389 never opened on {node['ip']}")
+        nodes.append(node)
+        print(f"{name}/{role}: ready ip={node['ip']} host={node['host']}", flush=True)
     if replace:
         for run_id in old:
             try:
                 gh(cfg, f"/actions/runs/{run_id}/cancel", "POST")
             except Exception:
                 pass
+    for node in nodes:
+        response = send_worker(node["ip"], "fast_cmd", "echo connected")
+        if response.get("status") != "completed":
+            raise RuntimeError(f"{name}/{node['role']}: connect check failed: {response}")
+    print(f"{name}: all 3 nodes connected", flush=True)
     result = {"status": "ready", "fleet": name, "nodes": nodes}
     local = BASE / f"cloud_nodes-{name}.json"
     local.write_text(json.dumps(result, indent=2), encoding="utf-8")
@@ -172,18 +195,7 @@ def cmd(name, node_role, action, prompt):
     node = next((n for n in data["nodes"] if n["role"] == node_role), None)
     if not node:
         raise SystemExit(f"no {node_role} in {path}")
-    payload = json.dumps({"action": action, "cmd": prompt}).encode("utf-8")
-    with socket.create_connection((node["ip"], 5555), timeout=15) as sock:
-        sock.settimeout(300)
-        sock.sendall(payload)
-        sock.shutdown(socket.SHUT_WR)
-        chunks = []
-        while True:
-            part = sock.recv(65536)
-            if not part:
-                break
-            chunks.append(part)
-    response = json.loads(b"".join(chunks).decode("utf-8"))
+    response = send_worker(node["ip"], action, prompt)
     print(response.get("stdout", ""))
     if response.get("stderr"):
         print(response["stderr"])
