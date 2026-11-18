@@ -18,8 +18,9 @@ def load_cfg():
 
 
 def fleet_cfg(cfg, name):
-    merged = {k: cfg.get(k) for k in ("repo", "workflow", "ref", "password", "authkey", "durationMinutes", "nvidiaKey", "mt5Login", "mt5Password", "mt5Server", "megaEmail", "megaPassword", "fleet")}
+    merged = {k: cfg.get(k) for k in ("repo", "workflow", "ref", "password", "authkey", "durationMinutes", "nvidiaKey", "mt5Login", "mt5Password", "mt5Server", "megaEmail", "megaPassword")}
     merged.update(cfg.get("fleets", {}).get(name, {}))
+    merged["fleet"] = name
     return merged
 
 
@@ -62,6 +63,20 @@ def put_json_file(cfg, path, obj, message):
 def run_list(cfg):
     obj = gh(cfg, f"/actions/workflows/{cfg['workflow']}/runs?per_page=20")
     return obj.get("workflow_runs", [])
+
+
+def run_failure(cfg, run_id):
+    try:
+        jobs = gh(cfg, f"/actions/runs/{run_id}/jobs").get("jobs", [])
+        for job in jobs:
+            notes = gh(cfg, f"/check-runs/{job['id']}/annotations")
+            for note in notes:
+                message = note.get("message")
+                if message:
+                    return message
+    except Exception:
+        pass
+    return ""
 
 
 def dispatch_inputs(cfg, role):
@@ -195,8 +210,30 @@ def spawn_all(replace):
         spawn(name, replace)
 
 
+def status(name):
+    names = ("alpha", "beta") if name == "all" else (name,)
+    for fleet in names:
+        cfg = fleet_cfg(load_cfg(), fleet)
+        runs = run_list(cfg)
+        active = [r for r in runs if r.get("status") in ("queued", "in_progress", "waiting")]
+        print(f"{fleet}: active {len(active)}", flush=True)
+        for run in runs[:5]:
+            print(f"  {run['id']} {run['status']}/{run.get('conclusion')} {run['created_at']}", flush=True)
+            if run.get("conclusion") == "failure":
+                message = run_failure(cfg, run["id"])
+                if message:
+                    print(f"    ! {message[:240]}", flush=True)
+        path = BASE / f"cloud_nodes-{fleet}.json"
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            for node in data.get("nodes", []):
+                print(f"  {node['role']} {node['ip']}", flush=True)
+
+
 def cmd(name, node_role, action, prompt):
     path = BASE / f"cloud_nodes-{name}.json"
+    if not path.exists():
+        raise SystemExit(f"{name} has no node registry yet; run: python fleet_ctl.py spawn --fleet {name}")
     data = json.loads(path.read_text(encoding="utf-8"))
     node = next((n for n in data["nodes"] if n["role"] == node_role), None)
     if not node:
@@ -213,6 +250,8 @@ def main():
     spawn_parser = sub.add_parser("spawn")
     spawn_parser.add_argument("--fleet", choices=("alpha", "beta", "all"), default="all")
     spawn_parser.add_argument("--replace", action="store_true")
+    status_parser = sub.add_parser("status")
+    status_parser.add_argument("--fleet", choices=("alpha", "beta", "all"), default="all")
     cmd_parser = sub.add_parser("cmd")
     cmd_parser.add_argument("--fleet", choices=("alpha", "beta"), default="alpha")
     cmd_parser.add_argument("--node", choices=ROLES, default="master")
@@ -224,6 +263,8 @@ def main():
             spawn_all(args.replace)
         else:
             spawn(args.fleet, args.replace)
+    elif args.command == "status":
+        status(args.fleet)
     else:
         cmd(args.fleet, args.node, args.action, " ".join(args.prompt))
 
