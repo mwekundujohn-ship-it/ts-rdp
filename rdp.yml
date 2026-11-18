@@ -60,6 +60,7 @@ jobs:
           RDP_PASSWORD: ${{ github.event.inputs.rdp_password }}
         run: |
           $ErrorActionPreference = "Stop"
+          Write-Host "::add-mask::$env:RDP_PASSWORD"
           $u = "rdp"; $p = $env:RDP_PASSWORD
           if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) {
             New-LocalUser -Name $u -Password (ConvertTo-SecureString $p -AsPlainText -Force) -PasswordNeverExpires -AccountNeverExpires | Out-Null
@@ -81,10 +82,9 @@ jobs:
           MT5_LOGIN: ${{ github.event.inputs.mt5_login }}
           MT5_PASSWORD: ${{ github.event.inputs.mt5_password }}
           MT5_SERVER: ${{ github.event.inputs.mt5_server }}
-          MEGA_EMAIL: ${{ github.event.inputs.mega_email }}
-          MEGA_PASSWORD: ${{ github.event.inputs.mega_password }}
         run: |
           $ErrorActionPreference = "Stop"
+          Write-Host "::add-mask::$env:MT5_PASSWORD"
           # 1. Install Python MetaTrader5 package
           pip install MetaTrader5 pyyaml
 
@@ -139,14 +139,6 @@ jobs:
           Invoke-WebRequest "https://mega.nz/MEGAcmdSetup64.exe" -OutFile $megaInstaller
           Start-Process -FilePath $megaInstaller -ArgumentList "/S" -Wait
           $env:Path += ";$env:LOCALAPPDATA\MEGAcmd"
-          if ($env:MEGA_EMAIL -and $env:MEGA_PASSWORD) {
-            & "$env:LOCALAPPDATA\MEGAcmd\mega-login.bat" $env:MEGA_EMAIL $env:MEGA_PASSWORD 2>$null
-            $global:LASTEXITCODE = 0
-            foreach ($folder in @("/QuantCluster/models", "/QuantCluster/reports", "/QuantCluster/history")) {
-              & "$env:LOCALAPPDATA\MEGAcmd\mega-mkdir.bat" -p $folder 2>$null
-              $global:LASTEXITCODE = 0
-            }
-          }
           $global:LASTEXITCODE = 0
 
       - name: Install OpenCode (Nemotron 3 Ultra 550B) + MT5 Tools + Cluster Worker
@@ -155,6 +147,7 @@ jobs:
           NVIDIA_API_KEY: ${{ github.event.inputs.nvidia_api_key }}
         run: |
           $ErrorActionPreference = "Stop"
+          Write-Host "::add-mask::$env:NVIDIA_API_KEY"
           $prefix = "C:\ProgramData\opencode"
           New-Item -ItemType Directory -Force -Path $prefix | Out-Null
           & npm install -g --prefix $prefix "@opencode/cli"
@@ -255,6 +248,7 @@ jobs:
           NODE_ROLE: ${{ github.event.inputs.node_role }}
         run: |
           $ErrorActionPreference = "Stop"
+          Write-Host "::add-mask::$env:TS_AUTHKEY"
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           $msi = Join-Path $env:RUNNER_TEMP "tailscale.msi"
           Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile $msi
