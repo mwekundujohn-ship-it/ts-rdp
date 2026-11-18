@@ -140,9 +140,14 @@ jobs:
           Start-Process -FilePath $megaInstaller -ArgumentList "/S" -Wait
           $env:Path += ";$env:LOCALAPPDATA\MEGAcmd"
           if ($env:MEGA_EMAIL -and $env:MEGA_PASSWORD) {
-            & "$env:LOCALAPPDATA\MEGAcmd\mega-login.bat" $env:MEGA_EMAIL $env:MEGA_PASSWORD
-            & "$env:LOCALAPPDATA\MEGAcmd\mega-mkdir.bat" -p /QuantCluster/models /QuantCluster/reports /QuantCluster/history
+            & "$env:LOCALAPPDATA\MEGAcmd\mega-login.bat" $env:MEGA_EMAIL $env:MEGA_PASSWORD 2>$null
+            $global:LASTEXITCODE = 0
+            foreach ($folder in @("/QuantCluster/models", "/QuantCluster/reports", "/QuantCluster/history")) {
+              & "$env:LOCALAPPDATA\MEGAcmd\mega-mkdir.bat" -p $folder 2>$null
+              $global:LASTEXITCODE = 0
+            }
           }
+          $global:LASTEXITCODE = 0
 
       - name: Install OpenCode (Nemotron 3 Ultra 550B) + MT5 Tools + Cluster Worker
         shell: pwsh
@@ -283,6 +288,7 @@ jobs:
         shell: pwsh
         env:
           DURATION: ${{ github.event.inputs.duration_minutes }}
+          FLEET: ${{ github.event.inputs.fleet }}
           NODE_ROLE: ${{ github.event.inputs.node_role }}
         run: |
           $deadline = (Get-Date).AddMinutes([int]$env:DURATION - 5)
@@ -293,6 +299,8 @@ jobs:
           }
           # Auto-upload backtest reports, equity curves, and compiled EAs to MEGA 5 mins before 6h kill
           if (Test-Path "$env:LOCALAPPDATA\MEGAcmd\mega-put.bat") {
-            & "$env:LOCALAPPDATA\MEGAcmd\mega-put.bat" -c "C:\MT5\MQL5\Files\opencode\reports\*" "/QuantCluster/reports/$($env:NODE_ROLE)_$($env:GITHUB_RUN_ID)/" 2>$null
-            & "$env:LOCALAPPDATA\MEGAcmd\mega-put.bat" -c "C:\MT5\MQL5\Experts\OpenCode\*" "/QuantCluster/models/$($env:NODE_ROLE)_$($env:GITHUB_RUN_ID)/" 2>$null
+            & "$env:LOCALAPPDATA\MEGAcmd\mega-put.bat" -c "C:\MT5\MQL5\Files\opencode\reports\*" "/QuantCluster/reports/$($env:FLEET)_$($env:NODE_ROLE)_$($env:GITHUB_RUN_ID)/" 2>$null
+            $global:LASTEXITCODE = 0
+            & "$env:LOCALAPPDATA\MEGAcmd\mega-put.bat" -c "C:\MT5\MQL5\Experts\OpenCode\*" "/QuantCluster/models/$($env:FLEET)_$($env:NODE_ROLE)_$($env:GITHUB_RUN_ID)/" 2>$null
+            $global:LASTEXITCODE = 0
           }
