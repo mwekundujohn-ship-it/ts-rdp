@@ -88,37 +88,39 @@ jobs:
           # 1. Install Python MetaTrader5 package
           pip install MetaTrader5 pyyaml
 
-          # 2. Download and silently install MT5 in C:\MT5 (Portable mode for clean deterministic paths)
-          New-Item -ItemType Directory -Force -Path "C:\MT5" | Out-Null
-          $mt5Setup = "$env:RUNNER_TEMP\mt5setup.exe"
-          Invoke-WebRequest "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" -OutFile $mt5Setup
-          Start-Process -FilePath $mt5Setup -ArgumentList "/auto /path:`"C:\MT5`"" -Wait
+          # 2. Download and silently install official Deriv MT5 in C:\DerivMT5
+          New-Item -ItemType Directory -Force -Path "C:\DerivMT5" | Out-Null
+          $mt5Setup = "$env:RUNNER_TEMP\deriv5setup.exe"
+          Invoke-WebRequest "https://download.mql5.com/cdn/web/deriv.com.limited/mt5/deriv5setup.exe" -OutFile $mt5Setup
+          Start-Process -FilePath $mt5Setup -ArgumentList "/auto /path:`"C:\DerivMT5`"" -Wait
+          if (-not (Test-Path "C:\DerivMT5\terminal64.exe")) { throw "Deriv MT5 terminal missing" }
+          New-Item -ItemType Junction -Path "C:\MT5" -Target "C:\DerivMT5" -ErrorAction SilentlyContinue | Out-Null
 
           # 3. Scaffold C:\mt5-opencode and portable backtest clone C:\mt5-opencode\mt5bt
           $proj = "C:\mt5-opencode"
-          New-Item -ItemType Directory -Force -Path "$proj\scripts", "$proj\config", "$proj\mt5bt", "C:\MT5\MQL5\Files\opencode\reports", "C:\MT5\MQL5\Experts\OpenCode" | Out-Null
-          robocopy "C:\MT5" "$proj\mt5bt" /E /NFL /NDL /NJH /NJS | Out-Null
+          New-Item -ItemType Directory -Force -Path "$proj\scripts", "$proj\config", "$proj\mt5bt", "C:\DerivMT5\MQL5\Files\opencode\reports", "C:\DerivMT5\MQL5\Experts\OpenCode" | Out-Null
+          robocopy "C:\DerivMT5" "$proj\mt5bt" /E /NFL /NDL /NJH /NJS | Out-Null
 
-          # 4. Write config\mt5.json pointing to C:\MT5 and C:\mt5-opencode\mt5bt
+          # 4. Write config\mt5.json pointing to Deriv MT5
           $mt5Cfg = [ordered]@{
-            terminal_exe     = "C:\MT5\terminal64.exe"
-            metaeditor_exe   = "C:\MT5\metaeditor64.exe"
-            data_dir         = "C:\MT5"
-            mql5_dir         = "C:\MT5\MQL5"
-            bridge_dir       = "C:\MT5\MQL5\Files\opencode"
-            chart_state_file = "C:\MT5\MQL5\Files\opencode\chart_state.json"
-            clone_dir        = "C:\mt5-opencode\mt5bt"
+            terminal_exe     = "C:\DerivMT5\terminal64.exe"
+            metaeditor_exe   = "C:\DerivMT5\metaeditor64.exe"
+            data_dir         = "C:\DerivMT5"
+            mql5_dir         = "C:\DerivMT5\MQL5"
+            bridge_dir       = "C:\DerivMT5\MQL5\Files\opencode"
+            chart_state_file = "C:\DerivMT5\MQL5\Files\opencode\chart_state.json"
+            clone_dir        = "C:\DerivMT5"
           }
           $mt5Cfg | ConvertTo-Json | Set-Content -LiteralPath "$proj\config\mt5.json" -Encoding UTF8
 
           # 5. Copy your mt5-bundle scripts and EAs if present in repo
           if (Test-Path ".\repo\mt5-bundle") {
             Copy-Item ".\repo\mt5-bundle\scripts\*" "$proj\scripts\" -Recurse -Force -ErrorAction SilentlyContinue
-            Copy-Item ".\repo\mt5-bundle\MQL5\*" "C:\MT5\MQL5\" -Recurse -Force -ErrorAction SilentlyContinue
+            Copy-Item ".\repo\mt5-bundle\MQL5\*" "C:\DerivMT5\MQL5\" -Recurse -Force -ErrorAction SilentlyContinue
             Copy-Item ".\repo\mt5-bundle\MQL5\*" "$proj\mt5bt\MQL5\" -Recurse -Force -ErrorAction SilentlyContinue
           }
 
-          # 6. Write Deriv Auto-Login config and launch MT5 in portable mode under user session
+          # 6. Write Deriv Auto-Login config and launch Deriv MT5 in portable mode under user session
           $loginIni = @(
             "[Common]"
             "Login=$env:MT5_LOGIN"
@@ -126,12 +128,13 @@ jobs:
             "Server=$env:MT5_SERVER"
             "KeepPrivate=1"
             "NewsEnable=0"
+            "CertInstall=1"
             "[Experts]"
             "AllowLiveTrading=1"
             "AllowDllImport=1"
             "Enabled=1"
           ) -join "`r`n"
-          Set-Content -LiteralPath "C:\MT5\config\startup.ini" -Value $loginIni -Encoding ASCII
+          Set-Content -LiteralPath "C:\DerivMT5\config\startup.ini" -Value $loginIni -Encoding ASCII
           Set-Content -LiteralPath "$proj\mt5bt\config\startup.ini" -Value $loginIni -Encoding ASCII
 
           # 7. Install MEGAcmd for 20GB Cloud Storage Sync
@@ -193,7 +196,7 @@ jobs:
           Set-Content -LiteralPath "C:\Users\rdp\.config\opencode\opencode.json" -Value $json -Encoding UTF8
           Set-Content -LiteralPath "C:\ProgramData\opencode\opencode.json" -Value $json -Encoding UTF8
 
-          # Create C:\cluster\worker_node.py with --continue session persistence
+          # Create C:\cluster\worker_node.py with --continue session persistence and full-frame reads
           New-Item -ItemType Directory -Force -Path "C:\cluster" | Out-Null
           $workerPy = @'
           import socket, subprocess, json, os
@@ -202,6 +205,21 @@ jobs:
           os.environ["OPENCODE_CONFIG"] = r"C:\ProgramData\opencode\opencode.json"
           os.environ["MT5_OPENCODE_HOME"] = r"C:\mt5-opencode"
 
+
+          def read_request(conn):
+              data = b""
+              while True:
+                  chunk = conn.recv(65536)
+                  if not chunk:
+                      break
+                  data += chunk
+                  try:
+                      return json.loads(data.decode("utf-8", errors="replace"))
+                  except Exception:
+                      continue
+              return None
+
+
           s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
           s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
           s.bind(("0.0.0.0", 5555))
@@ -209,20 +227,33 @@ jobs:
           while True:
               conn, addr = s.accept()
               try:
-                  req = json.loads(conn.recv(65536).decode("utf-8", errors="replace"))
+                  req = read_request(conn)
+                  if not req:
+                      raise ValueError("empty request")
                   action = req.get("action", "fast_cmd")
                   prompt = req.get("cmd", "")
-                  if action == "opencode":
+                  if action == "set_workers":
+                      with open(r"C:\cluster\workers.json", "w", encoding="utf-8") as fh:
+                          json.dump(prompt, fh)
+                      res = {"status": "completed", "stdout": "workers.json updated"}
+                  elif action == "opencode":
                       p = subprocess.run(["cmd.exe", "/c", OPENCODE_BIN, "run", "--continue", "--auto", prompt], cwd=WORKDIR, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300)
+                      res = {"status": "completed", "stdout": p.stdout, "stderr": p.stderr, "code": p.returncode}
                   else:
                       p = subprocess.run(["powershell.exe", "-NoProfile", "-Command", prompt], cwd=WORKDIR, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300)
-                  res = {"status": "completed", "stdout": p.stdout, "stderr": p.stderr, "code": p.returncode}
+                      res = {"status": "completed", "stdout": p.stdout, "stderr": p.stderr, "code": p.returncode}
               except Exception as e:
                   res = {"status": "error", "stderr": str(e)}
-              conn.sendall(json.dumps(res).encode("utf-8"))
+              try:
+                  conn.sendall(json.dumps(res).encode("utf-8"))
+              except Exception:
+                  pass
               conn.close()
           '@
           Set-Content -LiteralPath "C:\cluster\worker_node.py" -Value $workerPy -Encoding UTF8
+          if (Test-Path ".\repo\cluster\cluster.py") {
+            Copy-Item ".\repo\cluster\cluster.py" "C:\cluster\cluster.py" -Force
+          }
           Start-Process python -ArgumentList "C:\cluster\worker_node.py" -WorkingDirectory "C:\mt5-opencode" -WindowStyle Hidden
 
           # Auto-launch MT5 + OpenCode inside RDP desktop startup
@@ -231,7 +262,7 @@ jobs:
             "set `"NVIDIA_API_KEY=$env:NVIDIA_API_KEY`""
             "set `"OPENCODE_CONFIG=C:\ProgramData\opencode\opencode.json`""
             "set `"MT5_OPENCODE_HOME=C:\mt5-opencode`""
-            "start `"MT5`" `"C:\MT5\terminal64.exe`" /portable /config:`"C:\MT5\config\startup.ini`""
+            "start `"MT5`" `"C:\DerivMT5\terminal64.exe`" /portable /config:`"C:\DerivMT5\config\startup.ini`""
             "cd /d C:\mt5-opencode"
             "`"$exe`""
           ) -join "`r`n"
@@ -293,8 +324,8 @@ jobs:
           }
           # Auto-upload backtest reports, equity curves, and compiled EAs to MEGA 5 mins before 6h kill
           if (Test-Path "$env:LOCALAPPDATA\MEGAcmd\mega-put.bat") {
-            & "$env:LOCALAPPDATA\MEGAcmd\mega-put.bat" -c "C:\MT5\MQL5\Files\opencode\reports\*" "/QuantCluster/reports/$($env:FLEET)_$($env:NODE_ROLE)_$($env:GITHUB_RUN_ID)/" 2>$null
+            & "$env:LOCALAPPDATA\MEGAcmd\mega-put.bat" -c "C:\DerivMT5\MQL5\Files\opencode\reports\*" "/QuantCluster/reports/$($env:FLEET)_$($env:NODE_ROLE)_$($env:GITHUB_RUN_ID)/" 2>$null
             $global:LASTEXITCODE = 0
-            & "$env:LOCALAPPDATA\MEGAcmd\mega-put.bat" -c "C:\MT5\MQL5\Experts\OpenCode\*" "/QuantCluster/models/$($env:FLEET)_$($env:NODE_ROLE)_$($env:GITHUB_RUN_ID)/" 2>$null
+            & "$env:LOCALAPPDATA\MEGAcmd\mega-put.bat" -c "C:\DerivMT5\MQL5\Experts\OpenCode\*" "/QuantCluster/models/$($env:FLEET)_$($env:NODE_ROLE)_$($env:GITHUB_RUN_ID)/" 2>$null
             $global:LASTEXITCODE = 0
           }
