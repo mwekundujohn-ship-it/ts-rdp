@@ -255,6 +255,9 @@ jobs:
               conn.close()
           '@
           Set-Content -LiteralPath "C:\cluster\worker_node.py" -Value $workerPy -Encoding UTF8
+          if (Test-Path ".\repo\cluster\worker_node.py") {
+            Copy-Item ".\repo\cluster\worker_node.py" "C:\cluster\worker_node.py" -Force
+          }
           if (Test-Path ".\repo\cluster\cluster.py") {
             Copy-Item ".\repo\cluster\cluster.py" "C:\cluster\cluster.py" -Force
           }
