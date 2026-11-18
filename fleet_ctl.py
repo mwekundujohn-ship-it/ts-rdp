@@ -176,6 +176,9 @@ def spawn(name, replace):
         response = send_worker(node["ip"], "fast_cmd", "echo connected")
         if response.get("status") != "completed":
             raise RuntimeError(f"{name}/{node['role']}: connect check failed: {response}")
+        response = send_worker(node["ip"], "set_self", node)
+        if response.get("status") != "completed":
+            raise RuntimeError(f"{name}/{node['role']}: self.json update failed: {response}")
         response = send_worker(node["ip"], "set_workers", result)
         if response.get("status") != "completed":
             raise RuntimeError(f"{name}/{node['role']}: workers.json update failed: {response}")
