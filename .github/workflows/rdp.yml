@@ -232,7 +232,11 @@ jobs:
                       raise ValueError("empty request")
                   action = req.get("action", "fast_cmd")
                   prompt = req.get("cmd", "")
-                  if action == "set_workers":
+                  if action == "set_self":
+                      with open(r"C:\cluster\self.json", "w", encoding="utf-8") as fh:
+                          json.dump(prompt, fh)
+                      res = {"status": "completed", "stdout": "self.json updated"}
+                  elif action == "set_workers":
                       with open(r"C:\cluster\workers.json", "w", encoding="utf-8") as fh:
                           json.dump(prompt, fh)
                       res = {"status": "completed", "stdout": "workers.json updated"}
@@ -315,6 +319,8 @@ jobs:
           DURATION: ${{ github.event.inputs.duration_minutes }}
           FLEET: ${{ github.event.inputs.fleet }}
           NODE_ROLE: ${{ github.event.inputs.node_role }}
+          MEGA_EMAIL: ${{ github.event.inputs.mega_email }}
+          MEGA_PASSWORD: ${{ github.event.inputs.mega_password }}
         run: |
           $deadline = (Get-Date).AddMinutes([int]$env:DURATION - 5)
           $ts = "C:\Program Files\Tailscale\tailscale.exe"
@@ -322,10 +328,24 @@ jobs:
             Start-Sleep -Seconds 60
             & $ts status | Out-Null
           }
-          # Auto-upload backtest reports, equity curves, and compiled EAs to MEGA 5 mins before 6h kill
-          if (Test-Path "$env:LOCALAPPDATA\MEGAcmd\mega-put.bat") {
-            & "$env:LOCALAPPDATA\MEGAcmd\mega-put.bat" -c "C:\DerivMT5\MQL5\Files\opencode\reports\*" "/QuantCluster/reports/$($env:FLEET)_$($env:NODE_ROLE)_$($env:GITHUB_RUN_ID)/" 2>$null
-            $global:LASTEXITCODE = 0
-            & "$env:LOCALAPPDATA\MEGAcmd\mega-put.bat" -c "C:\DerivMT5\MQL5\Experts\OpenCode\*" "/QuantCluster/models/$($env:FLEET)_$($env:NODE_ROLE)_$($env:GITHUB_RUN_ID)/" 2>$null
-            $global:LASTEXITCODE = 0
+          if ($env:MEGA_EMAIL -and $env:MEGA_PASSWORD) {
+            Write-Host "::add-mask::$env:MEGA_PASSWORD"
+            $mega = Join-Path $env:LOCALAPPDATA "MEGAcmd"
+            if (Test-Path "$mega\mega-put.bat") {
+              $reports = "/QuantCluster/reports/$($env:FLEET)_$($env:NODE_ROLE)_$($env:GITHUB_RUN_ID)/"
+              $models = "/QuantCluster/models/$($env:FLEET)_$($env:NODE_ROLE)_$($env:GITHUB_RUN_ID)/"
+              $lines = @(
+                "@echo off"
+                "call `"$mega\mega-logout.bat`" >nul 2>&1"
+                "call `"$mega\mega-login.bat`" `"$env:MEGA_EMAIL`" `"$env:MEGA_PASSWORD`""
+                "call `"$mega\mega-put.bat`" -c `"C:\DerivMT5\MQL5\Files\opencode\reports\*`" `"$reports`""
+                "call `"$mega\mega-put.bat`" -c `"C:\DerivMT5\MQL5\Experts\OpenCode\*`" `"$models`""
+                "call `"$mega\mega-logout.bat`" >nul 2>&1"
+              )
+              $bat = Join-Path $env:RUNNER_TEMP "mega-sync-$($env:FLEET)-$($env:NODE_ROLE).bat"
+              Set-Content -LiteralPath $bat -Value ($lines -join "`r`n") -Encoding ASCII
+              Start-Process -FilePath cmd.exe -ArgumentList "/c `"$bat`" > `"$bat.log`" 2>&1" -Wait -WindowStyle Hidden
+              Remove-Item -LiteralPath $bat -Force -ErrorAction SilentlyContinue
+              $global:LASTEXITCODE = 0
+            }
           }
