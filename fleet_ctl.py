@@ -171,12 +171,15 @@ def spawn(name, replace):
                 gh(cfg, f"/actions/runs/{run_id}/cancel", "POST")
             except Exception:
                 pass
+    result = {"status": "ready", "fleet": name, "nodes": nodes}
     for node in nodes:
         response = send_worker(node["ip"], "fast_cmd", "echo connected")
         if response.get("status") != "completed":
             raise RuntimeError(f"{name}/{node['role']}: connect check failed: {response}")
+        response = send_worker(node["ip"], "set_workers", result)
+        if response.get("status") != "completed":
+            raise RuntimeError(f"{name}/{node['role']}: workers.json update failed: {response}")
     print(f"{name}: all 3 nodes connected", flush=True)
-    result = {"status": "ready", "fleet": name, "nodes": nodes}
     local = BASE / f"cloud_nodes-{name}.json"
     local.write_text(json.dumps(result, indent=2), encoding="utf-8")
     registry = cfg.get("registry") or f"registry/fleet-{name}.json"
