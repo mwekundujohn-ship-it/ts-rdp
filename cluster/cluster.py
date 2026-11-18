@@ -5,9 +5,21 @@ import subprocess
 from pathlib import Path
 
 REGISTRY = Path(r"C:\cluster\workers.json")
+SELF_PATH = Path(r"C:\cluster\self.json")
 
 
 def local_ips():
+    try:
+        info = json.loads(SELF_PATH.read_text(encoding="utf-8-sig"))
+        ip = info.get("ip")
+        if ip:
+            return {ip}
+    except Exception:
+        pass
+    for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+        ip = info[4][0]
+        if ip.startswith("100."):
+            return {ip}
     try:
         output = subprocess.run(
             [r"C:\Program Files\Tailscale\tailscale.exe", "ip", "-4"],
