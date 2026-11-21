@@ -294,6 +294,7 @@ jobs:
           $ts = "C:\Program Files\Tailscale\tailscale.exe"
           $hostname = "$($env:FLEET)-$($env:NODE_ROLE)-$env:GITHUB_RUN_ID"
           Start-Process -FilePath $ts -ArgumentList @("up","--hostname",$hostname,"--auth-key",$env:TS_AUTHKEY) -NoNewWindow
+          & $ts set --shields-up=false
           $ip = ""
           for ($i=0; $i -lt 40; $i++) {
             Start-Sleep -Seconds 3
