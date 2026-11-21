@@ -302,6 +302,7 @@ jobs:
           }
           $ip = $ip.Trim()
           $self = ((& $ts status --json 2>$null | Out-String | ConvertFrom-Json).Self.DNSName)
+          Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
           New-NetFirewallRule -DisplayName "Cluster Worker 5555" -Direction Inbound -Protocol TCP -LocalPort 5555 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
           Get-CimInstance Win32_Process -Filter "name='python.exe'" | Where-Object { $_.CommandLine -like '*worker_node.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
           Start-Process python -ArgumentList "C:\cluster\worker_node.py" -WorkingDirectory "C:\mt5-opencode" -WindowStyle Hidden
