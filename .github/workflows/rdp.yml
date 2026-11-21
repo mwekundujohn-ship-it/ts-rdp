@@ -302,6 +302,15 @@ jobs:
           }
           $ip = $ip.Trim()
           $self = ((& $ts status --json 2>$null | Out-String | ConvertFrom-Json).Self.DNSName)
+          New-NetFirewallRule -DisplayName "Cluster Worker 5555" -Direction Inbound -Protocol TCP -LocalPort 5555 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
+          Get-CimInstance Win32_Process -Filter "name='python.exe'" | Where-Object { $_.CommandLine -like '*worker_node.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Start-Process python -ArgumentList "C:\cluster\worker_node.py" -WorkingDirectory "C:\mt5-opencode" -WindowStyle Hidden
+          $ok = $false
+          for ($i=0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 2
+            if ((Test-NetConnection -ComputerName 127.0.0.1 -Port 5555 -WarningAction SilentlyContinue).TcpTestSucceeded) { $ok = $true; break }
+          }
+          if (-not $ok) { throw "worker port 5555 not listening" }
           $obj = @{ status = "ready"; fleet = $env:FLEET; role = $env:NODE_ROLE; ip = $ip; host = $hostname; self = $self; user = "rdp"; port = 3389; run_id = $env:GITHUB_RUN_ID; opencode = "ready"; mt5 = "ready" }
           $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($obj | ConvertTo-Json -Compress)))
           $headers = @{ Authorization = "token $env:GH_TOKEN"; "User-Agent" = "ci"; Accept = "application/vnd.github+json" }
