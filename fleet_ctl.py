@@ -155,7 +155,13 @@ def send_worker(ip, action, prompt):
 
 def spawn(name, replace):
     cfg = fleet_cfg(load_cfg(), name)
-    old = [str(r["id"]) for r in run_list(cfg) if r.get("status") in ("queued", "in_progress")]
+    old = [str(r["id"]) for r in run_list(cfg) if r.get("status") in ("queued", "in_progress", "waiting")]
+    if replace:
+        for run_id in old:
+            try:
+                gh(cfg, f"/actions/runs/{run_id}/cancel", "POST")
+            except Exception:
+                pass
     nodes = []
     expires = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=int(cfg["durationMinutes"]) + 2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     for role in ROLES:
@@ -180,12 +186,6 @@ def spawn(name, replace):
             raise TimeoutError(f"{name}/{role}: port 3389 never opened on {node['ip']}")
         nodes.append(node)
         print(f"{name}/{role}: ready ip={node['ip']} host={node['host']}", flush=True)
-    if replace:
-        for run_id in old:
-            try:
-                gh(cfg, f"/actions/runs/{run_id}/cancel", "POST")
-            except Exception:
-                pass
     result = {"status": "ready", "fleet": name, "nodes": nodes}
     for node in nodes:
         response = send_worker(node["ip"], "fast_cmd", "echo connected")
