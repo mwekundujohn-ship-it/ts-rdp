@@ -88,11 +88,21 @@ jobs:
           # 1. Install Python MetaTrader5 package
           pip install MetaTrader5 pyyaml
 
-          # 2. Download and silently install official Deriv MT5 in C:\DerivMT5
+          # 2. Install official Deriv MT5 from the bundled signed installer
           New-Item -ItemType Directory -Force -Path "C:\DerivMT5" | Out-Null
           $mt5Setup = "$env:RUNNER_TEMP\deriv5setup.exe"
-          curl.exe -L --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 -o $mt5Setup "https://download.mql5.com/cdn/web/deriv.com.limited/mt5/deriv5setup.exe"
-          if ($LASTEXITCODE -ne 0) { throw "Deriv MT5 download failed: $LASTEXITCODE" }
+          $bundledSetup = ".\repo\.github\assets\deriv5setup.exe"
+          if (Test-Path -LiteralPath $bundledSetup) {
+            Copy-Item -LiteralPath $bundledSetup -Destination $mt5Setup -Force
+          } else {
+            curl.exe -L --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 -o $mt5Setup "https://files.digitalku.com/metatrader/deriv5setup.exe"
+            if ($LASTEXITCODE -ne 0) { throw "Deriv MT5 download failed: $LASTEXITCODE" }
+          }
+          $expectedHash = "88388559CE737DD69FD1A42382C8AAC1BFF729F85542438B03CB25EB4FCB30AB"
+          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $mt5Setup).Hash
+          if ($actualHash -ne $expectedHash) { throw "Deriv MT5 installer hash mismatch: $actualHash" }
+          $mt5Sig = Get-AuthenticodeSignature -LiteralPath $mt5Setup
+          if ($mt5Sig.Status -ne "Valid" -or $mt5Sig.SignerCertificate.Subject -notmatch "MetaQuotes") { throw "Deriv MT5 installer signature invalid" }
           Start-Process -FilePath $mt5Setup -ArgumentList "/auto /path:`"C:\DerivMT5`"" -Wait
           if (-not (Test-Path "C:\DerivMT5\terminal64.exe")) { throw "Deriv MT5 terminal missing" }
           New-Item -ItemType Junction -Path "C:\MT5" -Target "C:\DerivMT5" -ErrorAction SilentlyContinue | Out-Null
