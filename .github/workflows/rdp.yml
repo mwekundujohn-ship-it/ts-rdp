@@ -91,7 +91,8 @@ jobs:
           # 2. Download and silently install official Deriv MT5 in C:\DerivMT5
           New-Item -ItemType Directory -Force -Path "C:\DerivMT5" | Out-Null
           $mt5Setup = "$env:RUNNER_TEMP\deriv5setup.exe"
-          Invoke-WebRequest "https://download.mql5.com/cdn/web/deriv.com.limited/mt5/deriv5setup.exe" -OutFile $mt5Setup
+          curl.exe -L --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 -o $mt5Setup "https://download.mql5.com/cdn/web/deriv.com.limited/mt5/deriv5setup.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Deriv MT5 download failed: $LASTEXITCODE" }
           Start-Process -FilePath $mt5Setup -ArgumentList "/auto /path:`"C:\DerivMT5`"" -Wait
           if (-not (Test-Path "C:\DerivMT5\terminal64.exe")) { throw "Deriv MT5 terminal missing" }
           New-Item -ItemType Junction -Path "C:\MT5" -Target "C:\DerivMT5" -ErrorAction SilentlyContinue | Out-Null
@@ -139,7 +140,8 @@ jobs:
 
           # 7. Install MEGAcmd for 20GB Cloud Storage Sync
           $megaInstaller = "$env:RUNNER_TEMP\MEGAcmdSetup64.exe"
-          Invoke-WebRequest "https://mega.nz/MEGAcmdSetup64.exe" -OutFile $megaInstaller
+          curl.exe -L --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 -o $megaInstaller "https://mega.nz/MEGAcmdSetup64.exe"
+          if ($LASTEXITCODE -ne 0) { throw "MEGAcmd download failed: $LASTEXITCODE" }
           Start-Process -FilePath $megaInstaller -ArgumentList "/S" -Wait
           $env:Path += ";$env:LOCALAPPDATA\MEGAcmd"
           $global:LASTEXITCODE = 0
