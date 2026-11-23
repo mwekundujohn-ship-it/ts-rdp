@@ -275,6 +275,32 @@ jobs:
           }
           Start-Process python -ArgumentList "C:\cluster\worker_node.py" -WorkingDirectory "C:\mt5-opencode" -WindowStyle Hidden
 
+          New-Item -ItemType Directory -Force -Path "$proj\.opencode\command" | Out-Null
+          $agents = @'
+          # MT5 Quant Cluster Context
+
+          You are on a node in a 3-node Windows cluster. `C:\cluster\workers.json` is the authoritative live registry.
+          The MT5 MCP server only controls the local terminal; worker nodes are separate machines reachable over Tailscale.
+
+          Use these commands and report real output:
+          - `python C:\cluster\cluster.py list` - full registry JSON
+          - `python C:\cluster\cluster.py check` - live alive check for master, worker1, worker2
+          - `python C:\cluster\cluster.py status` - process and MT5 status per node
+          - `python C:\cluster\cluster.py connect` - RDP commands per node
+          - `python C:\cluster\cluster.py cmd --node worker1 --action fast_cmd "<command>"` - run a command on a worker
+
+          Never claim the workers are unavailable before running `check` or reading `workers.json`.
+          When asked about workers, run `check` first and summarize role, IP, and status.
+          '@
+          Set-Content -LiteralPath "$proj\AGENTS.md" -Value $agents -Encoding UTF8
+          $nodesCmd = @'
+          ---
+          description: Show live cluster workers
+          ---
+          Run `python C:\cluster\cluster.py check` and report every role, IP, and status. If a worker fails, also run `python C:\cluster\cluster.py list` and show the registry.
+          '@
+          Set-Content -LiteralPath "$proj\.opencode\command\nodes.md" -Value $nodesCmd -Encoding UTF8
+
           # Auto-launch MT5 + OpenCode inside RDP desktop startup
           $launcher = @(
             "@echo off"
