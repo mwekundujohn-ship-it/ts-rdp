@@ -296,7 +296,7 @@ jobs:
           ---
           description: Show live cluster workers
           ---
-          Run `python C:\cluster\cluster.py check` and report every role, IP, and status. If a worker fails, also run `python C:\cluster\cluster.py list` and show the registry.
+          Run `python C:\cluster\cluster.py check` and report every role, IP, node_index/shard, pull, and status. If a worker fails, also run `python C:\cluster\cluster.py list` and show the registry.
           '@
           Set-Content -LiteralPath "$proj\.opencode\command\nodes.md" -Value $nodesCmd -Encoding UTF8
 
