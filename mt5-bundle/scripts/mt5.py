@@ -11,12 +11,14 @@ Config: C:\Users\MICROAPLE\mt5-opencode\config\mt5.json
 """
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-CONFIG_PATH = Path(r"C:\Users\MICROAPLE\mt5-opencode\config\mt5.json")
+HOME = Path(os.environ.get("MT5_OPENCODE_HOME", r"C:\mt5-opencode"))
+CONFIG_PATH = HOME / "config" / "mt5.json"
 MODELS = {
     "every_tick": 0, "ohlc_1min": 1, "open_prices": 2,
     "m1_ohlc": 3, "real_ticks": 4, "0": 0, "1": 1, "2": 2, "3": 3, "4": 4,
@@ -26,6 +28,18 @@ MODELS = {
 def load_cfg():
     with CONFIG_PATH.open("r", encoding="utf-8-sig") as f:
         return json.load(f)
+
+
+def read_common(clone: Path) -> list[str]:
+    p = clone / "config" / "startup.ini"
+    if not p.exists():
+        return []
+    out = ["[Common]"]
+    for line in p.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        s = line.strip()
+        if s.startswith(("Login=", "Password=", "Server=")):
+            out.append(s)
+    return out if len(out) > 1 else []
 
 
 # ---------------------------------------------------------------- eas
@@ -120,7 +134,8 @@ def cmd_backtest(args):
 
     ini = reports / "bt_run.ini"
     model = MODELS.get(str(args.model).lower(), MODELS.get(str(args.model), 2))
-    lines = [
+    lines = read_common(clone)
+    lines += [
         "[Tester]",
         "Expert=" + args.ea.replace("/", "\\").replace(".ex5", ""),
         "Symbol=" + args.symbol,
