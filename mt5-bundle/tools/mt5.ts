@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import * as path from "node:path";
 import * as os from "node:os";
 
-const HOME = process.env.MT5_OPENCODE_HOME || "C:\\Users\\MICROAPLE\\mt5-opencode";
+const HOME = process.env.MT5_OPENCODE_HOME || "C:\\mt5-opencode";
 const PY = process.env.MT5_PYTHON || "python";
 const SCRIPTS = path.join(HOME, "scripts");
 const MT5_PY = path.join(SCRIPTS, "mt5.py");
