@@ -7,7 +7,7 @@ Actions:
   backtest --ea --symbol --from --to ... portable-clone Strategy Tester run + report parse
   chart                                  read chart_state.json (ChartReaderEA bridge)
 
-Config: C:\Users\MICROAPLE\mt5-opencode\config\mt5.json
+Config: C:\mt5-opencode\config\mt5.json (or %MT5_OPENCODE_HOME%\config\mt5.json)
 """
 import argparse
 import json
