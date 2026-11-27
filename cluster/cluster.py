@@ -121,7 +121,10 @@ def main():
         ips = local_ips()
         for node in nodes:
             response = local_run("echo alive") if node["ip"] in ips else send(node["ip"], "fast_cmd", "echo alive")
-            print(f"{node['role']:<8} {node['ip']:<15} {response.get('status')} {response.get('stdout', '').strip()}")
+            idx = node.get("node_index", "?")
+            shard = node.get("shard", "?")
+            pull = node.get("pull", "?")
+            print(f"{node['role']:<8} {node['ip']:<15} index={idx} shard={shard} pull={pull} {response.get('status')} {response.get('stdout', '').strip()}")
         return
     if args.command == "status":
         ips = local_ips()
