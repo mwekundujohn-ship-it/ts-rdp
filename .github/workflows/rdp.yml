@@ -120,7 +120,7 @@ jobs:
             mql5_dir         = "C:\DerivMT5\MQL5"
             bridge_dir       = "C:\DerivMT5\MQL5\Files\opencode"
             chart_state_file = "C:\DerivMT5\MQL5\Files\opencode\chart_state.json"
-            clone_dir        = "C:\DerivMT5"
+            clone_dir        = "C:\mt5-opencode\mt5bt"
           }
           $mt5Cfg | ConvertTo-Json | Set-Content -LiteralPath "$proj\config\mt5.json" -Encoding UTF8
 
@@ -275,22 +275,18 @@ jobs:
           }
           Start-Process python -ArgumentList "C:\cluster\worker_node.py" -WorkingDirectory "C:\mt5-opencode" -WindowStyle Hidden
 
+          $proj = "C:\mt5-opencode"
           New-Item -ItemType Directory -Force -Path "$proj\.opencode\command" | Out-Null
           $agents = @'
           # MT5 Quant Cluster Context
 
-          You are on a node in a 3-node Windows cluster. `C:\cluster\workers.json` is the authoritative live registry.
-          The MT5 MCP server only controls the local terminal; worker nodes are separate machines reachable over Tailscale.
-
-          Use these commands and report real output:
-          - `python C:\cluster\cluster.py list` - full registry JSON
-          - `python C:\cluster\cluster.py check` - live alive check for master, worker1, worker2
-          - `python C:\cluster\cluster.py status` - process and MT5 status per node
-          - `python C:\cluster\cluster.py connect` - RDP commands per node
-          - `python C:\cluster\cluster.py cmd --node worker1 --action fast_cmd "<command>"` - run a command on a worker
-
-          Never claim the workers are unavailable before running `check` or reading `workers.json`.
-          When asked about workers, run `check` first and summarize role, IP, and status.
+          - MT5 bridge is local: `C:\ProgramData\opencode\tools\mt5.ts` plus `C:\mt5-opencode\scripts\mt5.py`. No MCP server is required.
+          - MT5 terminal: `C:\DerivMT5\terminal64.exe`; Python package `MetaTrader5` is installed. The interactive terminal may start only at RDP login.
+          - Headless backtest: `python C:\mt5-opencode\scripts\mt5.py backtest --ea <ea> --symbol <symbol> --period <tf> --from YYYY.MM.DD --to YYYY.MM.DD` uses `/portable /config:...`.
+          - Cluster registry: `C:\cluster\workers.json`. Use `python C:\cluster\cluster.py check|list|status|cmd`.
+          - QuantStore: SMB `\\100.125.90.54\quantstore`; SFTP `quantstore@100.125.90.54`, writable `/data`.
+          - Do not touch MEGA folders or live services unless explicitly instructed.
+          - Never claim workers or MT5 are unavailable before running `check` or the MT5 bridge.
           '@
           Set-Content -LiteralPath "$proj\AGENTS.md" -Value $agents -Encoding UTF8
           $nodesCmd = @'
