@@ -1,0 +1,51 @@
+{
+  "stage": "compare_anchors",
+  "node": "runnervmhh3zg",
+  "python": "3.12.10",
+  "platform": "Windows-2022Server-10.0.20348-SP0",
+  "started_utc": "2026-11-27T14:57:16.952973+00:00",
+  "elapsed_s": 1.166,
+  "checks_total": 2,
+  "checks_failed": 2,
+  "failed": [
+    "catalogs_loaded",
+    "matches_found"
+  ],
+  "checks": [
+    {
+      "name": "catalogs_loaded",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "matches_found",
+      "ok": false,
+      "detail": ""
+    }
+  ],
+  "metrics": {
+    "verified_anchors_loaded": 28,
+    "total_windows": 0,
+    "total_matches": 0,
+    "vault_size": 0,
+    "cascade_results": 0,
+    "elapsed_s": 1.17
+  },
+  "artifacts": [
+    {
+      "path": "C:\\work\\out\\phase4\\matches.json",
+      "bytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "path": "C:\\work\\out\\phase4\\anchor_vault.json",
+      "bytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "path": "C:\\work\\out\\phase4\\cascade_results.json",
+      "bytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    }
+  ]
+}
