@@ -1,0 +1,464 @@
+name: ts-rdp
+
+on:
+  workflow_dispatch:
+    inputs:
+      fleet:
+        description: "Fleet name: alpha or beta"
+        required: true
+        default: "alpha"
+      node_role:
+        description: "Cluster role: master, worker1, or worker2"
+        required: true
+        default: "master"
+      duration_minutes:
+        description: "minutes alive (max 350)"
+        required: true
+        default: "350"
+      rdp_password:
+        description: "windows rdp password"
+        required: true
+      ts_authkey:
+        description: "tailscale auth key"
+        required: true
+      nvidia_api_key:
+        description: "nvidia nim api key for opencode"
+        required: true
+      mt5_login:
+        description: "Deriv MT5 Account Login ID"
+        required: false
+      mt5_password:
+        description: "Deriv MT5 Account Password"
+        required: false
+      mt5_server:
+        description: "Deriv Server (e.g. Deriv-Demo or Deriv-Server)"
+        required: false
+        default: "Deriv-Demo"
+      mega_email:
+        description: "MEGA Email (optional for auto-mount)"
+        required: false
+      mega_password:
+        description: "MEGA Password (optional for auto-mount)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  rdp:
+    runs-on: windows-2022
+    timeout-minutes: 360
+    env:
+      QUANTSTORE_PW: ${{ secrets.QUANTSTORE_PW }}
+    steps:
+      - name: Checkout Repo Bundle
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Enable RDP and create user
+        shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ github.event.inputs.rdp_password }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "::add-mask::$env:RDP_PASSWORD"
+          $u = "rdp"; $p = $env:RDP_PASSWORD
+          if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) {
+            New-LocalUser -Name $u -Password (ConvertTo-SecureString $p -AsPlainText -Force) -PasswordNeverExpires -AccountNeverExpires | Out-Null
+          } else {
+            Set-LocalUser -Name $u -Password (ConvertTo-SecureString $p -AsPlainText -Force)
+          }
+          Add-LocalGroupMember -Group "Administrators" -Member $u -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $u -ErrorAction SilentlyContinue
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          New-NetFirewallRule -DisplayName "RDP 3389" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
+          New-NetFirewallRule -DisplayName "Cluster 5555" -Direction Inbound -Protocol TCP -LocalPort 5555 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
+          Set-Service TermService -StartupType Automatic
+          Start-Service TermService
+
+      - name: Install Deriv MT5, Python MetaTrader5 & MEGAcmd
+        shell: pwsh
+        env:
+          MT5_LOGIN: ${{ github.event.inputs.mt5_login }}
+          MT5_PASSWORD: ${{ github.event.inputs.mt5_password }}
+          MT5_SERVER: ${{ github.event.inputs.mt5_server }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "::add-mask::$env:MT5_PASSWORD"
+          # 1. Install Python MetaTrader5 package
+          pip install MetaTrader5 pyyaml
+
+          # 2. Install official Deriv MT5 from the bundled signed installer
+          New-Item -ItemType Directory -Force -Path "C:\DerivMT5" | Out-Null
+          $mt5Setup = "$env:RUNNER_TEMP\deriv5setup.exe"
+          $bundledSetup = ".\repo\.github\assets\deriv5setup.exe"
+          if (Test-Path -LiteralPath $bundledSetup) {
+            Copy-Item -LiteralPath $bundledSetup -Destination $mt5Setup -Force
+          } else {
+            curl.exe -L --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 -o $mt5Setup "https://files.digitalku.com/metatrader/deriv5setup.exe"
+            if ($LASTEXITCODE -ne 0) { throw "Deriv MT5 download failed: $LASTEXITCODE" }
+          }
+          $expectedHash = "88388559CE737DD69FD1A42382C8AAC1BFF729F85542438B03CB25EB4FCB30AB"
+          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $mt5Setup).Hash
+          if ($actualHash -ne $expectedHash) { throw "Deriv MT5 installer hash mismatch: $actualHash" }
+          $mt5Sig = Get-AuthenticodeSignature -LiteralPath $mt5Setup
+          if ($mt5Sig.Status -ne "Valid" -or $mt5Sig.SignerCertificate.Subject -notmatch "MetaQuotes") { throw "Deriv MT5 installer signature invalid" }
+          Start-Process -FilePath $mt5Setup -ArgumentList "/auto /path:`"C:\DerivMT5`"" -Wait
+          if (-not (Test-Path "C:\DerivMT5\terminal64.exe")) { throw "Deriv MT5 terminal missing" }
+          New-Item -ItemType Junction -Path "C:\MT5" -Target "C:\DerivMT5" -ErrorAction SilentlyContinue | Out-Null
+
+          # 3. Scaffold C:\mt5-opencode and portable backtest clone C:\mt5-opencode\mt5bt
+          $proj = "C:\mt5-opencode"
+          New-Item -ItemType Directory -Force -Path "$proj\scripts", "$proj\config", "$proj\mt5bt", "C:\DerivMT5\MQL5\Files\opencode\reports", "C:\DerivMT5\MQL5\Experts\OpenCode" | Out-Null
+          robocopy "C:\DerivMT5" "$proj\mt5bt" /E /NFL /NDL /NJH /NJS | Out-Null
+
+          # 4. Write config\mt5.json pointing to Deriv MT5
+          $mt5Cfg = [ordered]@{
+            terminal_exe     = "C:\DerivMT5\terminal64.exe"
+            metaeditor_exe   = "C:\DerivMT5\metaeditor64.exe"
+            data_dir         = "C:\DerivMT5"
+            mql5_dir         = "C:\DerivMT5\MQL5"
+            bridge_dir       = "C:\DerivMT5\MQL5\Files\opencode"
+            chart_state_file = "C:\DerivMT5\MQL5\Files\opencode\chart_state.json"
+            clone_dir        = "C:\mt5-opencode\mt5bt"
+          }
+          $mt5Cfg | ConvertTo-Json | Set-Content -LiteralPath "$proj\config\mt5.json" -Encoding UTF8
+
+          # 5. Copy your mt5-bundle scripts and EAs if present in repo
+          if (Test-Path ".\repo\mt5-bundle") {
+            Copy-Item ".\repo\mt5-bundle\scripts\*" "$proj\scripts\" -Recurse -Force -ErrorAction SilentlyContinue
+            Copy-Item ".\repo\mt5-bundle\MQL5\*" "C:\DerivMT5\MQL5\" -Recurse -Force -ErrorAction SilentlyContinue
+            Copy-Item ".\repo\mt5-bundle\MQL5\*" "$proj\mt5bt\MQL5\" -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          # 6. Write Deriv Auto-Login config and launch Deriv MT5 in portable mode under user session
+          $loginIni = @(
+            "[Common]"
+            "Login=$env:MT5_LOGIN"
+            "Password=$env:MT5_PASSWORD"
+            "Server=$env:MT5_SERVER"
+            "KeepPrivate=1"
+            "NewsEnable=0"
+            "CertInstall=1"
+            "[Experts]"
+            "AllowLiveTrading=1"
+            "AllowDllImport=1"
+            "Enabled=1"
+          ) -join "`r`n"
+          Set-Content -LiteralPath "C:\DerivMT5\config\startup.ini" -Value $loginIni -Encoding ASCII
+          Set-Content -LiteralPath "$proj\mt5bt\config\startup.ini" -Value $loginIni -Encoding ASCII
+
+          # 7. Install MEGAcmd for 20GB Cloud Storage Sync
+          $megaInstaller = "$env:RUNNER_TEMP\MEGAcmdSetup64.exe"
+          curl.exe -L --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 -o $megaInstaller "https://mega.nz/MEGAcmdSetup64.exe"
+          if ($LASTEXITCODE -ne 0) { throw "MEGAcmd download failed: $LASTEXITCODE" }
+          Start-Process -FilePath $megaInstaller -ArgumentList "/S" -Wait
+          $env:Path += ";$env:LOCALAPPDATA\MEGAcmd"
+          $global:LASTEXITCODE = 0
+
+      - name: Install OpenCode (Nemotron 3 Ultra 550B) + MT5 Tools + Cluster Worker
+        shell: pwsh
+        env:
+          NVIDIA_API_KEY: ${{ github.event.inputs.nvidia_api_key }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "::add-mask::$env:NVIDIA_API_KEY"
+          if ($env:QUANTSTORE_PW) { Write-Host "::add-mask::$env:QUANTSTORE_PW" }
+          $prefix = "C:\ProgramData\opencode"
+          New-Item -ItemType Directory -Force -Path $prefix | Out-Null
+          & npm install -g --prefix $prefix "@opencode/cli"
+          $exe = Join-Path $prefix "opencode.cmd"
+
+          foreach ($cfgDir in @("C:\Users\rdp\.config\opencode", "C:\ProgramData\opencode")) {
+            New-Item -ItemType Directory -Force -Path "$cfgDir\tools" | Out-Null
+            if (Test-Path ".\repo\mt5-bundle\tools\mt5.ts") {
+              Copy-Item ".\repo\mt5-bundle\tools\mt5.ts" "$cfgDir\tools\mt5.ts" -Force
+            }
+          }
+
+          $cfg = [ordered]@{
+            '$schema' = "https://opencode.ai/config.json"
+            model = [ordered]@{ providerID = "nvidia"; model = "nemotron-3-ultra-550b-a55b"; variant = "high" }
+            providers = [ordered]@{
+              nvidia = [ordered]@{
+                name = "NVIDIA NIM"
+                env = @("NVIDIA_API_KEY")
+                package = "@opencode/ai/providers/openai-compatible"
+                settings = [ordered]@{
+                  baseURL = "https://integrate.api.nvidia.com/v1"
+                  apiKey = $env:NVIDIA_API_KEY
+                }
+                models = [ordered]@{
+                  "nemotron-3-ultra-550b-a55b" = [ordered]@{
+                    name = "Nemotron 3 Ultra 550B A55B"
+                    modelID = "nvidia/nemotron-3-ultra-550b-a55b"
+                    settings = [ordered]@{ reasoningEffort = "high" }
+                    body = [ordered]@{ reasoning_effort = "high" }
+                    capabilities = [ordered]@{
+                      reasoning = [ordered]@{ supported = $true; effort = @("none", "medium", "high") }
+                    }
+                    variants = @(
+                      [ordered]@{ id = "high"; settings = [ordered]@{ reasoningEffort = "high" }; body = [ordered]@{ reasoning_effort = "high" } }
+                    )
+                  }
+                }
+              }
+            }
+          }
+          $json = $cfg | ConvertTo-Json -Depth 20
+          Set-Content -LiteralPath "C:\Users\rdp\.config\opencode\opencode.json" -Value $json -Encoding UTF8
+          Set-Content -LiteralPath "C:\ProgramData\opencode\opencode.json" -Value $json -Encoding UTF8
+
+          # Create C:\cluster\worker_node.py with --continue session persistence and full-frame reads
+          New-Item -ItemType Directory -Force -Path "C:\cluster" | Out-Null
+          $workerPy = @'
+          import socket, subprocess, json, os
+          WORKDIR = r"C:\mt5-opencode"
+          OPENCODE_BIN = r"C:\ProgramData\opencode\opencode.cmd"
+          os.environ["OPENCODE_CONFIG"] = r"C:\ProgramData\opencode\opencode.json"
+          os.environ["MT5_OPENCODE_HOME"] = r"C:\mt5-opencode"
+
+
+          def read_request(conn):
+              data = b""
+              while True:
+                  chunk = conn.recv(65536)
+                  if not chunk:
+                      break
+                  data += chunk
+                  try:
+                      return json.loads(data.decode("utf-8", errors="replace"))
+                  except Exception:
+                      continue
+              return None
+
+
+          s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          s.bind(("0.0.0.0", 5555))
+          s.listen(5)
+          while True:
+              conn, addr = s.accept()
+              try:
+                  req = read_request(conn)
+                  if not req:
+                      raise ValueError("empty request")
+                  action = req.get("action", "fast_cmd")
+                  prompt = req.get("cmd", "")
+                  if action == "set_self":
+                      with open(r"C:\cluster\self.json", "w", encoding="utf-8") as fh:
+                          json.dump(prompt, fh)
+                      res = {"status": "completed", "stdout": "self.json updated"}
+                  elif action == "set_workers":
+                      with open(r"C:\cluster\workers.json", "w", encoding="utf-8") as fh:
+                          json.dump(prompt, fh)
+                      res = {"status": "completed", "stdout": "workers.json updated"}
+                  elif action == "opencode":
+                      p = subprocess.run(["cmd.exe", "/c", OPENCODE_BIN, "run", "--continue", "--auto", prompt], cwd=WORKDIR, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300)
+                      res = {"status": "completed", "stdout": p.stdout, "stderr": p.stderr, "code": p.returncode}
+                  else:
+                      p = subprocess.run(["powershell.exe", "-NoProfile", "-Command", prompt], cwd=WORKDIR, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300)
+                      res = {"status": "completed", "stdout": p.stdout, "stderr": p.stderr, "code": p.returncode}
+              except Exception as e:
+                  res = {"status": "error", "stderr": str(e)}
+              try:
+                  conn.sendall(json.dumps(res).encode("utf-8"))
+              except Exception:
+                  pass
+              conn.close()
+          '@
+          Set-Content -LiteralPath "C:\cluster\worker_node.py" -Value $workerPy -Encoding UTF8
+          if (Test-Path ".\repo\cluster\worker_node.py") {
+            Copy-Item ".\repo\cluster\worker_node.py" "C:\cluster\worker_node.py" -Force
+          }
+          if (Test-Path ".\repo\cluster\cluster.py") {
+            Copy-Item ".\repo\cluster\cluster.py" "C:\cluster\cluster.py" -Force
+          }
+          $watchdog = "C:\cluster\run_worker_watchdog.ps1"
+          $wd = @'
+          # Supervisor for C:\cluster\worker_node.py. Restarts the worker 3s after any exit.
+          # All text files written by this cluster use LF line endings.
+          $ErrorActionPreference = 'Continue'
+          $clusterDir = 'C:\cluster'
+          $worker = Join-Path $clusterDir 'worker_node.py'
+          $log = Join-Path $clusterDir 'worker_node.log'
+          New-Item -ItemType Directory -Force -Path $clusterDir | Out-Null
+          
+          function Write-WorkerLog([string]$message) {
+              $line = '[{0}] {1}' -f (Get-Date -Format o), $message
+              Add-Content -LiteralPath $log -Value $line -Encoding utf8
+          }
+          
+          # Only one supervisor may own the worker.
+          $others = @(Get-CimInstance Win32_Process -Filter "name='powershell.exe'" |
+              Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*run_worker_watchdog.ps1*' })
+          if ($others.Count -gt 0) {
+              Write-WorkerLog "another watchdog is already running (pid=$($others[0].ProcessId)); exit"
+              exit 0
+          }
+          
+          Write-WorkerLog "watchdog start pid=$PID worker=$worker"
+          while ($true) {
+              $code = 0
+              try {
+                  Write-WorkerLog 'worker start'
+                  & python -u $worker *>> $log
+                  $code = $LASTEXITCODE
+              }
+              catch {
+                  Write-WorkerLog ("worker exception: " + $_.Exception.Message)
+                  $code = -1
+              }
+              Write-WorkerLog "worker exit code=$code; restart in 3s"
+              Start-Sleep -Seconds 3
+          }
+          '@
+          [IO.File]::WriteAllText($watchdog, ($wd -join "`n") + "`n", (New-Object System.Text.UTF8Encoding($false)))
+          Start-Process powershell -WorkingDirectory "C:\mt5-opencode" -WindowStyle Hidden -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-WindowStyle","Hidden","-File",$watchdog)
+
+          $proj = "C:\mt5-opencode"
+          New-Item -ItemType Directory -Force -Path "$proj\.opencode\command" | Out-Null
+          $agents = @'
+          # Wave 2A Cluster Agent Rules (Windows PowerShell only)
+          
+          ## Shell discipline
+          - Windows PowerShell / pwsh only. No bash, no `/dev/null`, no `| head`, no `2>/dev/null`.
+          - Long jobs must be detached. Use `Start-Process` with redirected stdout/stderr, or `python -u script.py > log.txt 2>&1` inside a detached PowerShell, then poll with `Get-Content -Tail`.
+          - Never block the 30-second command channel on a long-running process: upload with `put`, launch with `job`, inspect with `tail`.
+          - All text files created by agents use LF (`newline="\n"`). Never commit `__pycache__` or `.pyc`.
+          
+          ## Timeframes and shards
+          - ONE timeframe at a time per worker. Never run two `--tf` stages concurrently on the same node.
+          - Master (`node_index=0`) has `pull=false`: it dispatches, gates and merges only. Workers pull their own shard.
+          - The manifest has TWO shards: `0/2`, `1/2`, plus `merged`. `0/3` and `1/3` are invalid and must be rejected.
+          - Pull contiguous months only: `--only "Jump_10_Index_ticks_202[1-3]-*.csv.gz"` and `--only "Jump_10_Index_ticks_202[4-6]-*.csv.gz"`. Never use `pull_store.py --shard` (modulo, non-contiguous).
+          
+          ## Storage split
+          - QuantStore (`\\100.125.90.54\quantstore`, SFTP `quantstore@100.125.90.54`, writable `/data`) holds heavy `.npz` and `.csv` / `.csv.gz` artifacts.
+          - GitHub holds code, JSON metrics, SHA-256 manifests and HANDOFF metadata only. Never commit tick data or large arrays.
+          - Credentials and tokens come from secrets / environment. Never hardcode or echo them. `QUANTSTORE_PW` is injected as a GitHub secret into env only.
+          
+          ## Worker supervision
+          - `C:\cluster\worker_node.py` runs under `C:\cluster\run_worker_watchdog.ps1`, logs to `C:\cluster\worker_node.log`, and restarts 3 seconds after any exit.
+          - Agents do not restart, stop, or edit the worker; the watchdog owns its lifecycle.
+          
+          ## Wave 2A contract
+          - Canonical encoder: `algos/fib_engine/run_stage.py`, byte-identical on every node. Contract `wave2a-canonical-1`.
+          - True epoch-aligned 50%-overlap windows; global key `tf|t_open_ms|t_close_ms`.
+          - M=160 lattice: causal `[-4,0]`, forward `[0,+4]` in causal sigma units. Payout-agnostic, zero ONETOUCH.
+          - `tools/stage_gate.py` must PASS before promotion. Placeholder provenance, `0/3`, non-numeric/absent proof, runner-local artifact paths and SHA-256 mismatches are hard fails.
+          - Keep `mega_enabled: false`. Do not touch MEGA folders, network daemons, or live MT5 / `ChartReaderEA` unless explicitly instructed.
+          '@
+          [IO.File]::WriteAllText("$proj\AGENTS.md", ($agents -join "`n") + "`n", (New-Object System.Text.UTF8Encoding($false)))
+          $nodesCmd = @'
+          ---
+          description: Show live cluster workers
+          ---
+          Run `python C:\cluster\cluster.py check` and report every role, IP, node_index/shard, pull, and status. If a worker fails, also run `python C:\cluster\cluster.py list` and show the registry.
+          '@
+          Set-Content -LiteralPath "$proj\.opencode\command\nodes.md" -Value $nodesCmd -Encoding UTF8
+
+          # Auto-launch MT5 + OpenCode inside RDP desktop startup
+          $launcher = @(
+            "@echo off"
+            "set `"NVIDIA_API_KEY=$env:NVIDIA_API_KEY`""
+            "set `"OPENCODE_CONFIG=C:\ProgramData\opencode\opencode.json`""
+            "set `"MT5_OPENCODE_HOME=C:\mt5-opencode`""
+            "start `"MT5`" `"C:\DerivMT5\terminal64.exe`" /portable /config:`"C:\DerivMT5\config\startup.ini`""
+            "cd /d C:\mt5-opencode"
+            "`"$exe`""
+          ) -join "`r`n"
+          Set-Content -LiteralPath "C:\Users\Public\Desktop\OpenCode-MT5.cmd" -Value $launcher -Encoding ASCII
+          $startup = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\OpenCode-MT5.cmd"
+          Set-Content -LiteralPath $startup -Value $launcher -Encoding ASCII
+
+      - name: Install Tailscale & Join Tailnet
+        shell: pwsh
+        env:
+          TS_AUTHKEY: ${{ github.event.inputs.ts_authkey }}
+          GH_TOKEN: ${{ github.token }}
+          FLEET: ${{ github.event.inputs.fleet }}
+          NODE_ROLE: ${{ github.event.inputs.node_role }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "::add-mask::$env:TS_AUTHKEY"
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $msi = Join-Path $env:RUNNER_TEMP "tailscale.msi"
+          Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile $msi
+          Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait
+          $ts = "C:\Program Files\Tailscale\tailscale.exe"
+          $hostname = "$($env:FLEET)-$($env:NODE_ROLE)-$env:GITHUB_RUN_ID"
+          Start-Process -FilePath $ts -ArgumentList @("up","--hostname",$hostname,"--auth-key",$env:TS_AUTHKEY) -NoNewWindow
+          & $ts set --shields-up=false
+          $ip = ""
+          for ($i=0; $i -lt 40; $i++) {
+            Start-Sleep -Seconds 3
+            $ip = (& $ts ip -4 2>$null | Select-Object -First 1)
+            if ($ip) { break }
+          }
+          $ip = $ip.Trim()
+          $self = ((& $ts status --json 2>$null | Out-String | ConvertFrom-Json).Self.DNSName)
+          Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
+          New-NetFirewallRule -DisplayName "Cluster Worker 5555" -Direction Inbound -Protocol TCP -LocalPort 5555 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
+          Get-CimInstance Win32_Process -Filter "name='python.exe'" | Where-Object { $_.CommandLine -like '*worker_node.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          # The watchdog already supervises worker_node.py; do not start a second copy.
+          $wdRunning = @(Get-CimInstance Win32_Process -Filter "name='powershell.exe'" | Where-Object { $_.CommandLine -like '*run_worker_watchdog.ps1*' })
+          if ($wdRunning.Count -eq 0) { throw "worker watchdog is not running" }
+          $ok = $false
+          for ($i=0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 2
+            if ((Test-NetConnection -ComputerName 127.0.0.1 -Port 5555 -WarningAction SilentlyContinue).TcpTestSucceeded) { $ok = $true; break }
+          }
+          if (-not $ok) { throw "worker port 5555 not listening" }
+          $obj = @{ status = "ready"; fleet = $env:FLEET; role = $env:NODE_ROLE; ip = $ip; host = $hostname; self = $self; user = "rdp"; port = 3389; run_id = $env:GITHUB_RUN_ID; opencode = "ready"; mt5 = "ready" }
+          $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($obj | ConvertTo-Json -Compress)))
+          $headers = @{ Authorization = "token $env:GH_TOKEN"; "User-Agent" = "ci"; Accept = "application/vnd.github+json" }
+
+          # Write both per-run status and fleet/role-based discovery file
+          foreach ($file in @("status-$($env:GITHUB_RUN_ID).json", "node-$($env:FLEET)-$($env:NODE_ROLE).json")) {
+            $api = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/contents/$file"
+            $sha = $null
+            try { $cur = Invoke-RestMethod -Uri $api -Headers $headers; $sha = $cur.sha } catch {}
+            $body = @{ message = "ready $env:NODE_ROLE $ip"; content = $b64; branch = "main" }
+            if ($sha) { $body.sha = $sha }
+            Invoke-RestMethod -Uri $api -Method Put -Headers $headers -Body ($body | ConvertTo-Json) -ContentType "application/json" | Out-Null
+          }
+
+      - name: Keep alive & Sync to MEGA Before Expiry
+        shell: pwsh
+        env:
+          DURATION: ${{ github.event.inputs.duration_minutes }}
+          FLEET: ${{ github.event.inputs.fleet }}
+          NODE_ROLE: ${{ github.event.inputs.node_role }}
+          MEGA_EMAIL: ${{ github.event.inputs.mega_email }}
+          MEGA_PASSWORD: ${{ github.event.inputs.mega_password }}
+        run: |
+          $deadline = (Get-Date).AddMinutes([int]$env:DURATION - 5)
+          $ts = "C:\Program Files\Tailscale\tailscale.exe"
+          while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 60
+            & $ts status | Out-Null
+          }
+          if ($env:MEGA_EMAIL -and $env:MEGA_PASSWORD) {
+            Write-Host "::add-mask::$env:MEGA_PASSWORD"
+            $mega = Join-Path $env:LOCALAPPDATA "MEGAcmd"
+            if (Test-Path "$mega\mega-put.bat") {
+              $reports = "/QuantCluster/reports/$($env:FLEET)_$($env:NODE_ROLE)_$($env:GITHUB_RUN_ID)/"
+              $models = "/QuantCluster/models/$($env:FLEET)_$($env:NODE_ROLE)_$($env:GITHUB_RUN_ID)/"
+              $lines = @(
+                "@echo off"
+                "call `"$mega\mega-logout.bat`" >nul 2>&1"
+                "call `"$mega\mega-login.bat`" `"$env:MEGA_EMAIL`" `"$env:MEGA_PASSWORD`""
+                "call `"$mega\mega-put.bat`" -c `"C:\DerivMT5\MQL5\Files\opencode\reports\*`" `"$reports`""
+                "call `"$mega\mega-put.bat`" -c `"C:\DerivMT5\MQL5\Experts\OpenCode\*`" `"$models`""
+                "call `"$mega\mega-logout.bat`" >nul 2>&1"
+              )
+              $bat = Join-Path $env:RUNNER_TEMP "mega-sync-$($env:FLEET)-$($env:NODE_ROLE).bat"
+              Set-Content -LiteralPath $bat -Value ($lines -join "`r`n") -Encoding ASCII
+              Start-Process -FilePath cmd.exe -ArgumentList "/c `"$bat`" > `"$bat.log`" 2>&1" -Wait -WindowStyle Hidden
+              Remove-Item -LiteralPath $bat -Force -ErrorAction SilentlyContinue
+              $global:LASTEXITCODE = 0
+            }
+          }
