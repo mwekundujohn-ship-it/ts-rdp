@@ -380,8 +380,16 @@ def main(argv: list[str] | None = None) -> int:
         months = []
         files = []
     
-    # Build full file paths
-    file_paths = [tick_dir / f for f in files]
+    # Build full file paths - resolve .csv.gz if .csv doesn't exist
+    file_paths = []
+    for f in files:
+        p = tick_dir / f
+        if not p.exists():
+            # Try .gz extension
+            gz_path = tick_dir / (f + ".gz")
+            if gz_path.exists():
+                p = gz_path
+        file_paths.append(p)
     
     # Output directory
     out_dir = Path(args.out)
