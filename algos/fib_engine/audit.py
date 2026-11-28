@@ -67,6 +67,18 @@ class Audit:
     def _packet(self) -> dict:
         elapsed = time.time() - self.started
         failed = [c["name"] for c in self.checks if not c["ok"]]
+        
+        # Provenance block (required by stage_gate.py)
+        import os
+        provenance = {
+            "runner_name": os.environ.get("RUNNER_NAME", self.node),
+            "github_run_id": os.environ.get("GITHUB_RUN_ID", ""),
+            "hostname": platform.node(),
+            "shard_id": os.environ.get("SHARD_ID", ""),
+            "pid": os.getpid(),
+            "utc_timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        
         return {
             "stage": self.stage,
             "node": self.node,
@@ -79,6 +91,7 @@ class Audit:
             "failed": failed,
             "checks": self.checks,
             "metrics": self.metrics,
+            "provenance": provenance,
             "artifacts": [
                 {"path": str(p), "bytes": p.stat().st_size, "sha256": sha256_file(p)}
                 for p in self.artifacts
@@ -89,12 +102,12 @@ class Audit:
         pkt = self._packet()
 
         mpath = self.dir / "metrics_and_checks.json"
-        mpath.write_text(json.dumps(pkt, indent=2), encoding="utf-8")
+        mpath.write_text(json.dumps(pkt, indent=2), encoding="utf-8", newline="\n")
 
         mpath_sha = self.dir / "manifest.sha256"
         lines = [f"{a['sha256']}  {Path(a['path']).name}" for a in pkt["artifacts"]]
         lines.append(f"{sha256_file(mpath)}  {mpath.name}")
-        mpath_sha.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        mpath_sha.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
         chat = [
             f"# {self.stage} - progress chat",
@@ -115,7 +128,7 @@ class Audit:
             chat += ["## Notes", "", self.notes, ""]
         if summary:
             chat += ["## Summary", "", summary, ""]
-        (self.dir / "progress_chat.md").write_text("\n".join(chat), encoding="utf-8")
+        (self.dir / "progress_chat.md").write_text("\n".join(chat), encoding="utf-8", newline="\n")
 
         self.say(f"packet written to {self.dir}")
         return self.dir

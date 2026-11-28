@@ -1,0 +1,9 @@
+{
+  "source_directory": "C:\\quantstore\\ticks\\Jump_10_Index",
+  "output_root": "C:\\work\\out",
+  "timeframes": ["30m", "1h", "4h", "6h"],
+  "symbol": "Jump 10 Index.0",
+  "portable_clone": "C:\\mt5-opencode\\mt5bt",
+  "terminal_exe": "C:\\DerivMT5\\terminal64.exe",
+  "metaeditor_exe": "C:\\DerivMT5\\metaeditor64.exe"
+}
