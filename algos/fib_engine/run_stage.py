@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import glob
 import json
 import os
@@ -75,13 +76,26 @@ def load_shard_manifest(manifest_path: str | None = None) -> dict:
 # ========================================================================
 
 def load_month_ticks(csv_path: Path) -> tuple[np.ndarray, np.ndarray]:
-    """Load a monthly tick CSV and return (epoch_ms, price) arrays.
+    """Load a monthly tick CSV (or CSV.GZ) and return (epoch_ms, price) arrays.
     
     Expected columns: timestamp, bid, ask, volume (or similar)
+    Handles both .csv and .csv.gz files transparently.
     """
     epochs = []
     prices = []
-    with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+    
+    # Resolve path: try as-is, then with .gz extension
+    resolved_path = csv_path
+    if not resolved_path.exists():
+        gz_path = csv_path.with_suffix(csv_path.suffix + ".gz")
+        if gz_path.exists():
+            resolved_path = gz_path
+    
+    # Open with gzip if .gz extension, otherwise regular open
+    open_func = gzip.open if resolved_path.suffix == ".gz" else open
+    mode = "rt" if resolved_path.suffix == ".gz" else "r"
+    
+    with open_func(resolved_path, mode, encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             try:
@@ -218,7 +232,11 @@ def process_month_file(
     if len(epochs) < 100:
         return [], []
     
-    month = csv_path.stem.replace("Jump_10_Index_ticks_", "")
+    # Handle both .csv and .csv.gz extensions for month extraction
+    stem = csv_path.stem
+    if stem.endswith(".csv"):
+        stem = stem[:-4]  # remove .csv
+    month = stem.replace("Jump_10_Index_ticks_", "")
     catalog_rows = {tf: [] for tf in timeframes}
     curve_bundles = {tf: [] for tf in timeframes}
     
